@@ -129,13 +129,49 @@ export const parsers: Record<SupportedScanner, (output: any) => UnifiedFinding[]
 
   clair: (clairOutput: any): UnifiedFinding[] => {
     const findings: UnifiedFinding[] = [];
+    const imageName = clairOutput?.image_name || clairOutput?.ImageName || 'container-image';
+
+    // Handle Clair v4 format (vulnerabilities as object keyed by ID)
+    if (clairOutput?.vulnerabilities && typeof clairOutput.vulnerabilities === 'object' && !Array.isArray(clairOutput.vulnerabilities)) {
+      const packages = clairOutput.packages || {};
+
+      Object.entries(clairOutput.vulnerabilities).forEach(([vulnId, vuln]: [string, any]) => {
+        const ruleId = vuln.name || vulnId;
+        const pkgInfo = vuln.package || {};
+        const pkgName = pkgInfo.name || 'unknown-package';
+        const pkgVersion = pkgInfo.version || '';
+        const fingerprint = createFingerprint([imageName, ruleId, pkgName, pkgVersion]);
+
+        findings.push({
+          scanner_name: 'clair',
+          scanner_version: 'v4',
+          rule_id: ruleId,
+          fingerprint,
+          severity: normalizeSeverity(vuln.normalized_severity || vuln.severity),
+          file_path: imageName,
+          title: vuln.description || ruleId,
+          description: vuln.description,
+          remediation: vuln.fixed_in_version
+            ? `Update ${pkgName} to ${vuln.fixed_in_version}`
+            : vuln.links
+            ? `See: ${vuln.links}`
+            : undefined,
+          cve_ids: ruleId.startsWith('CVE-') ? [ruleId] : undefined,
+          raw_data: vuln,
+        });
+      });
+
+      return findings;
+    }
+
+    // Handle legacy Clair v2/v3 format (vulnerabilities as array)
     const vulnerabilities =
       clairOutput?.Vulnerabilities || clairOutput?.vulnerabilities || clairOutput || [];
 
     if (Array.isArray(vulnerabilities)) {
       vulnerabilities.forEach((vuln: any) => {
         const ruleId = vuln.Name || vuln.Vulnerability || vuln.id || 'clair-vuln';
-        const filePath = clairOutput?.ImageName || vuln.LayerName || 'container-image';
+        const filePath = imageName || vuln.LayerName || 'container-image';
         const fingerprint = createFingerprint([filePath, ruleId, vuln.FeatureName, vuln.FeatureVersion]);
 
         findings.push({

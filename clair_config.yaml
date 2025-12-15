@@ -1,8 +1,15 @@
 introspection_addr: :6061
 http_listen_addr: :6060
 log_level: info
+indexer:
+  connstring: host=clair-db port=5432 user=clair password=clair dbname=clair sslmode=disable
+  scanlock_retry: 10
+  layer_scan_concurrency: 5
+  migrations: true
 matcher:
+  connstring: host=clair-db port=5432 user=clair password=clair dbname=clair sslmode=disable
   indexer_addr: http://localhost:6060
+  migrations: true
 notifier:
   connstring: host=clair-db port=5432 user=clair password=clair dbname=clair sslmode=disable
   migrations: true
