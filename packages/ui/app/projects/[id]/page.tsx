@@ -264,7 +264,24 @@ export default function ProjectDetails({ params }: PageProps) {
           ) : (
             <div className="space-y-4">
               {scans.map((scan) => (
-                <div key={scan.id} className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <div
+                  key={scan.id}
+                  className={cn(
+                    "bg-white rounded-xl border p-4 shadow-sm cursor-pointer transition-all hover:shadow-md",
+                    activeScanId === scan.id
+                      ? "border-indigo-400 ring-2 ring-indigo-100"
+                      : "border-slate-200 hover:border-slate-300"
+                  )}
+                  onClick={() => {
+                    setActiveScanId(scan.id);
+                    // Fetch findings for this scan
+                    fetch(`${API_URL}/findings`)
+                      .then(res => res.json())
+                      .then(allFindings => {
+                        setFindings(allFindings.filter((f: any) => f.scan_id === scan.id));
+                      });
+                  }}
+                >
                   <div className="flex items-center justify-between flex-wrap gap-3">
                     <div>
                       <p className="text-xs font-mono text-slate-400">Scan ID</p>
@@ -278,6 +295,18 @@ export default function ProjectDetails({ params }: PageProps) {
                       {formatTimestamp(scan.completed_at)}
                     </div>
                   </div>
+                  {/* Show scan-level error if present */}
+                  {scan.error_log && (
+                    <div className="mt-3 p-3 bg-rose-50 border border-rose-200 rounded-lg">
+                      <div className="flex items-start gap-2">
+                        <XCircle className="w-4 h-4 text-rose-500 mt-0.5 flex-shrink-0" />
+                        <div>
+                          <p className="text-xs font-semibold text-rose-700">Scan Error</p>
+                          <p className="text-xs text-rose-600 font-mono whitespace-pre-wrap mt-1">{scan.error_log}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <div className="mt-4 space-y-2">
                     {scan.runs.length === 0 ? (
                       <p className="text-xs text-slate-500">No individual scanner data recorded.</p>
@@ -285,20 +314,31 @@ export default function ProjectDetails({ params }: PageProps) {
                       scan.runs.map((run) => (
                         <div
                           key={run.id}
-                          className="flex items-center justify-between gap-3 text-xs px-3 py-2 bg-slate-50 rounded-lg border border-slate-100"
+                          className="text-xs px-3 py-2 bg-slate-50 rounded-lg border border-slate-100"
                         >
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold text-slate-700">{run.scanner_name}</span>
-                            <span className={cn('px-2 py-0.5 rounded-full font-semibold', statusTone(run.status))}>
-                              {run.status.toUpperCase()}
-                            </span>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-slate-700">{run.scanner_name}</span>
+                              <span className={cn('px-2 py-0.5 rounded-full font-semibold', statusTone(run.status))}>
+                                {run.status.toUpperCase()}
+                              </span>
+                            </div>
+                            <div className="text-slate-500">
+                              Findings: <span className="font-semibold text-slate-700">{run.findings_count ?? 0}</span>
+                            </div>
+                            <div className="text-slate-400">
+                              {formatTimestamp(run.started_at)} → {formatTimestamp(run.completed_at)}
+                            </div>
                           </div>
-                          <div className="text-slate-500">
-                            Findings: <span className="font-semibold text-slate-700">{run.findings_count ?? 0}</span>
-                          </div>
-                          <div className="text-slate-400">
-                            {formatTimestamp(run.started_at)} → {formatTimestamp(run.completed_at)}
-                          </div>
+                          {/* Show scanner-specific error if present */}
+                          {run.error_log && (
+                            <div className="mt-2 p-2 bg-rose-50 border border-rose-100 rounded">
+                              <div className="flex items-start gap-2">
+                                <XCircle className="w-3 h-3 text-rose-500 mt-0.5 flex-shrink-0" />
+                                <p className="text-xs text-rose-600 font-mono whitespace-pre-wrap break-all">{run.error_log}</p>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       ))
                     )}

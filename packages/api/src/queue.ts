@@ -1,6 +1,9 @@
 import { spawn } from 'child_process';
+import fs from 'fs';
 import http from 'http';
 import https from 'https';
+import os from 'os';
+import path from 'path';
 import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 import { emitScanEvent } from './events';
@@ -12,6 +15,7 @@ import {
   updateScanRunStatus,
   updateScanStatus,
 } from './db';
+import { COMMON_IGNORE_PATTERNS, toContainerPath, HOST_PATH_PREFIX } from './config';
 import { parsers, SupportedScanner, UnifiedFinding } from './parsers';
 
 const redisConnection = new IORedis(process.env.REDIS_URL || 'redis://localhost:36379', {
@@ -34,7 +38,36 @@ interface ScannerCommandConfig {
   transformOutput?: (rawOutput: string) => Promise<any>;
 }
 
-const parseJsonOutput = async (rawOutput: string) => (rawOutput ? JSON.parse(rawOutput) : {});
+const parseJsonOutput = async (rawOutput: string) => {
+  if (!rawOutput) {
+    return {};
+  }
+  const trimmed = rawOutput.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch (err) {
+    const firstObject = trimmed.indexOf('{');
+    const firstArray = trimmed.indexOf('[');
+    const candidates = [firstObject, firstArray].filter((idx) => idx >= 0);
+    if (candidates.length === 0) {
+      throw err;
+    }
+    const start = Math.min(...candidates);
+    const startChar = trimmed[start];
+    const end = startChar === '{' ? trimmed.lastIndexOf('}') : trimmed.lastIndexOf(']');
+    if (end <= start) {
+      throw err;
+    }
+    const sliced = trimmed.slice(start, end + 1);
+    return JSON.parse(sliced);
+  }
+};
+
+const MAX_SCAN_FILE_SIZE_BYTES = 2 * 1024 * 1024;
+const SEMGREP_CONFIGS = (process.env.SEMGREP_CONFIG || 'auto')
+  .split(',')
+  .map((cfg) => cfg.trim())
+  .filter(Boolean);
 
 function runDockerCommand(args: string[]) {
   return new Promise<void>((resolve, reject) => {
@@ -61,18 +94,13 @@ function sanitizeTag(value: string) {
 
 function importDirectoryAsImage(hostPath: string, imageTag: string) {
   return new Promise<void>((resolve, reject) => {
-    const tarArgs = [
-      'run',
-      '--rm',
-      '-v',
-      `${hostPath}:/workspace:ro`,
-      'alpine:3.19',
-      'tar',
-      '-C',
-      '/workspace',
-      '-c',
-      '.',
-    ];
+    const tarArgs = ['run', '--rm', '-v', `${hostPath}:/workspace:ro`, 'alpine:3.19', 'tar'];
+    if (COMMON_IGNORE_PATTERNS.length > 0) {
+      COMMON_IGNORE_PATTERNS.forEach((pattern) => {
+        tarArgs.push('--exclude', pattern);
+      });
+    }
+    tarArgs.push('-C', '/workspace', '-c', '.');
     const importArgs = ['import', '-', imageTag];
 
     const tarProcess = spawn('docker', tarArgs);
@@ -147,6 +175,41 @@ async function prepareClairTarget(hostPath: string, scanId: string) {
   };
 }
 
+async function copyDirectoryWithLimit(src: string, dest: string, maxBytes: number) {
+  await fs.promises.mkdir(dest, { recursive: true });
+  const entries = await fs.promises.readdir(src, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+
+    if (entry.isDirectory()) {
+      await copyDirectoryWithLimit(srcPath, destPath, maxBytes);
+    } else if (entry.isFile()) {
+      const { size } = await fs.promises.stat(srcPath);
+      if (size <= maxBytes) {
+        await fs.promises.copyFile(srcPath, destPath);
+      }
+    }
+  }
+}
+
+async function prepareFilteredTarget(hostPath: string, scanId: string) {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `sentinel-filtered-${sanitizeTag(scanId)}-`));
+  await copyDirectoryWithLimit(hostPath, tempDir, MAX_SCAN_FILE_SIZE_BYTES);
+
+  return {
+    target: tempDir,
+    async cleanup() {
+      try {
+        await fs.promises.rm(tempDir, { recursive: true, force: true });
+      } catch (err) {
+        console.warn(`Failed to remove filtered temp directory ${tempDir}: ${(err as Error).message}`);
+      }
+    },
+  };
+}
+
 interface SonarCredentials {
   token?: string;
   username?: string;
@@ -159,8 +222,23 @@ function resolveSonarCredentials(): SonarCredentials {
   }
   return {
     username: process.env.SONARQUBE_USERNAME || 'admin',
-    password: process.env.SONARQUBE_PASSWORD || 'admin',
+    password: process.env.SONARQUBE_PASSWORD || 'Admin@1234567',
   };
+}
+
+function resolveSonarScannerUrl() {
+  return process.env.SONARQUBE_SCANNER_URL || process.env.SONARQUBE_URL || 'http://localhost:19000';
+}
+
+function resolveSonarScannerNetworkArgs() {
+  const network = process.env.SONARQUBE_SCANNER_NETWORK;
+  if (!network) {
+    return ['--network', 'host'];
+  }
+  if (network === 'none') {
+    return [];
+  }
+  return ['--network', network];
 }
 
 function sonarAuthHeader() {
@@ -172,7 +250,7 @@ function sonarAuthHeader() {
 }
 
 function sonarRequest<T = any>(path: string, expectJson = true): Promise<T> {
-  const sonarUrl = process.env.SONARQUBE_URL || 'http://sonarqube:9000';
+  const sonarUrl = process.env.SONARQUBE_URL || 'http://localhost:19000';
   const targetUrl = new URL(path, sonarUrl);
   const client = targetUrl.protocol === 'https:' ? https : http;
 
@@ -241,37 +319,52 @@ function buildScannerCommand(scannerType: SupportedScanner, target: string, scan
         ],
         parser: parsers.trivy,
       };
-    case 'semgrep':
+    case 'semgrep': {
+      const dockerArgs = [
+        'run',
+        '--rm',
+        '-v',
+        `${target}:/src:ro`,
+        'returntocorp/semgrep',
+        'semgrep',
+        '--quiet',
+        '--json',
+        '--output',
+        '/dev/stdout',
+      ];
+      SEMGREP_CONFIGS.forEach((cfg) => {
+        dockerArgs.push('--config', cfg);
+      });
+      COMMON_IGNORE_PATTERNS.forEach((pattern) => {
+        dockerArgs.push('--exclude', pattern);
+      });
+      dockerArgs.push('/src');
       return {
-        dockerArgs: [
-          'run',
-          '--rm',
-          '-v',
-          `${target}:/src:ro`,
-          'returntocorp/semgrep',
-          'semgrep',
-          '--json',
-          '--output',
-          '/dev/stdout',
-          '/src',
-        ],
+        dockerArgs,
         parser: parsers.semgrep,
       };
-    case 'bandit':
+    }
+    case 'bandit': {
+      const dockerArgs = [
+        'run',
+        '--rm',
+        '-v',
+        `${target}:/target:ro`,
+        'cytopia/bandit:latest',
+        '-r',
+        '/target',
+        '-f',
+        'json',
+        '--exit-zero',
+      ];
+      if (COMMON_IGNORE_PATTERNS.length > 0) {
+        dockerArgs.push('-x', COMMON_IGNORE_PATTERNS.join(','));
+      }
       return {
-        dockerArgs: [
-          'run',
-          '--rm',
-          '-v',
-          `${target}:/target:ro`,
-          'cytopia/bandit:latest',
-          '-r',
-          '/target',
-          '-f',
-          'json',
-        ],
+        dockerArgs,
         parser: parsers.bandit,
       };
+    }
     case 'clair':
       return {
         dockerArgs: [
@@ -294,18 +387,19 @@ function buildScannerCommand(scannerType: SupportedScanner, target: string, scan
         parser: parsers.clair,
       };
     case 'sonarqube': {
-      const sonarUrl = process.env.SONARQUBE_URL || 'http://sonarqube:9000';
+      const sonarScannerUrl = resolveSonarScannerUrl();
       const creds = resolveSonarCredentials();
       const projectKey = `sentinel-${sanitizeTag(scanId)}-${Date.now().toString(36)}`;
       const dockerArgs = [
         'run',
         '--rm',
+        ...resolveSonarScannerNetworkArgs(),
         '-v',
         `${target}:/usr/src`,
         '-w',
         '/usr/src',
         '-e',
-        `SONAR_HOST_URL=${sonarUrl}`,
+        `SONAR_HOST_URL=${sonarScannerUrl}`,
         '-e',
         'SONAR_SCANNER_OPTS=-Xmx1024m',
       ];
@@ -323,6 +417,9 @@ function buildScannerCommand(scannerType: SupportedScanner, target: string, scan
         '-Dsonar.sources=.',
         '-Dsonar.qualitygate.wait=true'
       );
+      if (COMMON_IGNORE_PATTERNS.length > 0) {
+        dockerArgs.push(`-Dsonar.exclusions=${COMMON_IGNORE_PATTERNS.join(',')}`);
+      }
 
       return {
         dockerArgs,
@@ -336,13 +433,14 @@ function buildScannerCommand(scannerType: SupportedScanner, target: string, scan
 }
 
 async function runScannerProcess(scanId: string, scannerType: SupportedScanner, hostPath: string) {
+  // Use original host path for Docker volume mounts (Docker runs on host)
   let target = hostPath;
-  let cleanup: (() => Promise<void>) | undefined;
+  const cleanupTasks: Array<() => Promise<void>> = [];
 
   if (scannerType === 'clair') {
-    const prepared = await prepareClairTarget(hostPath, scanId);
+    const prepared = await prepareClairTarget(target, scanId);
     target = prepared.target;
-    cleanup = prepared.cleanup;
+    cleanupTasks.push(prepared.cleanup);
   }
 
   const { dockerArgs, parser, transformOutput } = buildScannerCommand(scannerType, target, scanId);
@@ -403,11 +501,14 @@ async function runScannerProcess(scanId: string, scannerType: SupportedScanner, 
   });
 
   return runPromise.finally(async () => {
-    if (cleanup) {
-      try {
-        await cleanup();
-      } catch (err) {
-        console.warn(`Cleanup for Clair scan ${scanId} failed: ${(err as Error).message}`);
+    while (cleanupTasks.length > 0) {
+      const cleanup = cleanupTasks.pop();
+      if (cleanup) {
+        try {
+          await cleanup();
+        } catch (err) {
+          console.warn(`Cleanup for scan ${scanId} failed: ${(err as Error).message}`);
+        }
       }
     }
   });

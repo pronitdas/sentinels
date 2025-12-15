@@ -36,6 +36,17 @@ The infrastructure automatically pulls the following images on startup:
     *   Create a project by providing the **Absolute Path** to a folder on your host machine (e.g., `/Users/me/code/my-app`).
     *   Click "Run Analysis".
 
+## Ignore Patterns
+
+Large binary map artifacts can overwhelm scanners such as Bandit and Semgrep. Sentinel automatically excludes `*.tiff`, `*.geojson`, and `*.pmtiles` (matched anywhere in the tree) from every scanner. You can extend the ignored list by setting `SENTINEL_IGNORE_PATTERNS` before starting the stack:
+
+```bash
+export SENTINEL_IGNORE_PATTERNS="*.tiff,*.geojson,*.pmtiles,*.mp4"
+docker compose up --build
+```
+
+Patterns accept simple globs and will be passed through to each scanner that supports per-file exclusions.
+
 ## SonarQube Setup
 
 The SonarQube service is exposed on [http://localhost:9000](http://localhost:9000). To enable Sonar scans:

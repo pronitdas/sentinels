@@ -18,11 +18,16 @@ services:
       - DATABASE_URL=postgres://sentinel:sentinel@postgres:5432/sentinel
       - REDIS_URL=redis://redis:6379
       - SONARQUBE_URL=http://sonarqube:9000
-      - SONARQUBE_TOKEN=${SONARQUBE_TOKEN:-}
+      - SONARQUBE_SCANNER_URL=http://sonarqube:9000
+      - SONARQUBE_SCANNER_NETWORK=sentinels_default
+      - SONARQUBE_TOKEN=${SONARQUBE_TOKEN:-squ_e95bceee7af42ef06e4c9bf077dbe0b2ff25fffb}
+      - SONAR_TOKEN=${SONARQUBE_TOKEN:-squ_e95bceee7af42ef06e4c9bf077dbe0b2ff25fffb}
       - SONARQUBE_USERNAME=${SONARQUBE_USERNAME:-admin}
       - SONARQUBE_PASSWORD=${SONARQUBE_PASSWORD:-admin}
+      - SENTINEL_IGNORE_PATTERNS=${SENTINEL_IGNORE_PATTERNS:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /home/pronit:/workspace:ro
     depends_on:
       postgres:
         condition: service_started
@@ -84,11 +89,11 @@ services:
       - "36379:6379"
 
   sonarqube:
-    image: sonarqube:10.6.0-community
+    image: sonarqube:community
     environment:
       - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
     ports:
-      - "9000:9000"
+      - "19000:9000"
     volumes:
       - sonarqube_data:/opt/sonarqube/data
       - sonarqube_extensions:/opt/sonarqube/extensions
