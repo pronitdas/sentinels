@@ -14,12 +14,25 @@ interface PageProps {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 
+interface ScanRun {
+  id: string;
+  scanner_name: string;
+  status: 'pending' | 'queued' | 'running' | 'completed' | 'failed';
+  findings_count: number;
+  started_at: string | null;
+  completed_at: string | null;
+  error_log?: string | null;
+  created_at: string;
+}
+
 interface Scan {
   id: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   scanners: string[];
-  started_at: string;
-  completed_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  runs: ScanRun[];
   error_log?: string;
 }
 
@@ -42,11 +55,29 @@ export default function ProjectDetails({ params }: PageProps) {
   const [activeScanId, setActiveScanId] = useState<string | null>(null);
   const [selectedScanners, setSelectedScanners] = useState<string[]>(['trivy', 'semgrep']);
 
+  const formatTimestamp = (value?: string | null) =>
+    value ? new Date(value).toLocaleString() : '—';
+
+  const statusTone = (status: string) => {
+    switch (status) {
+      case 'completed':
+        return 'bg-emerald-50 text-emerald-700 border border-emerald-100';
+      case 'failed':
+        return 'bg-rose-50 text-rose-700 border border-rose-100';
+      case 'running':
+      case 'queued':
+        return 'bg-amber-50 text-amber-700 border border-amber-100';
+      default:
+        return 'bg-slate-50 text-slate-700 border border-slate-100';
+    }
+  };
+
   const AVAILABLE_SCANNERS = [
     { id: 'trivy', label: 'Trivy' },
     { id: 'semgrep', label: 'Semgrep' },
     { id: 'bandit', label: 'Bandit' },
     { id: 'clair', label: 'Clair' },
+    { id: 'sonarqube', label: 'SonarQube' },
   ];
 
   const toggleScanner = (id: string) => {
@@ -71,6 +102,10 @@ export default function ProjectDetails({ params }: PageProps) {
       // Wait, the design doc had /scans/:id. 
       // Let's implement a poller for the active scan if we trigger one.
       
+      const scansRes = await fetch(`${API_URL}/projects/${params.id}/scans`);
+      const history = await scansRes.json();
+      setScans(history);
+
       // For findings, we have /findings?severity=...
       // We really need /findings?projectId=... or /scans/:id/findings. 
       // I'll assume for this prototype we fetch global findings and filter client side (Not performant but works for demo).
@@ -214,6 +249,65 @@ export default function ProjectDetails({ params }: PageProps) {
              </div>
            </div>
         )}
+
+        {/* Scan History */}
+        <section className="mb-10">
+          <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-3">
+            <Clock className="w-5 h-5 text-slate-500" />
+            Scan History
+            <span className="bg-slate-200 text-slate-600 text-xs px-2 py-0.5 rounded-full">{scans.length}</span>
+          </h2>
+          {scans.length === 0 ? (
+            <div className="bg-white border border-dashed border-slate-200 rounded-xl p-6 text-sm text-slate-500">
+              No scans recorded yet. Launch your first analysis to populate history.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {scans.map((scan) => (
+                <div key={scan.id} className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                  <div className="flex items-center justify-between flex-wrap gap-3">
+                    <div>
+                      <p className="text-xs font-mono text-slate-400">Scan ID</p>
+                      <p className="text-sm font-semibold text-slate-900">{scan.id}</p>
+                    </div>
+                    <div className={cn('text-xs px-3 py-1 rounded-full font-semibold', statusTone(scan.status))}>
+                      {scan.status.toUpperCase()}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      Started: {formatTimestamp(scan.started_at || scan.created_at)} · Completed:{' '}
+                      {formatTimestamp(scan.completed_at)}
+                    </div>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {scan.runs.length === 0 ? (
+                      <p className="text-xs text-slate-500">No individual scanner data recorded.</p>
+                    ) : (
+                      scan.runs.map((run) => (
+                        <div
+                          key={run.id}
+                          className="flex items-center justify-between gap-3 text-xs px-3 py-2 bg-slate-50 rounded-lg border border-slate-100"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold text-slate-700">{run.scanner_name}</span>
+                            <span className={cn('px-2 py-0.5 rounded-full font-semibold', statusTone(run.status))}>
+                              {run.status.toUpperCase()}
+                            </span>
+                          </div>
+                          <div className="text-slate-500">
+                            Findings: <span className="font-semibold text-slate-700">{run.findings_count ?? 0}</span>
+                          </div>
+                          <div className="text-slate-400">
+                            {formatTimestamp(run.started_at)} → {formatTimestamp(run.completed_at)}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
 
         {/* Findings List */}
         <div className="space-y-4">

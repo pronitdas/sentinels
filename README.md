@@ -17,6 +17,9 @@ The infrastructure automatically pulls the following images on startup:
 | :--- | :--- | :--- |
 | **Trivy** | SCA / Secret Scanning | `aquasec/trivy:latest` |
 | **Semgrep** | SAST | `returntocorp/semgrep` |
+| **Bandit** | Python Security Lints | `cytopia/bandit:latest` |
+| **Clair** | Container Image Vulnerabilities | `ovotech/clair-scanner`, `quay.io/projectquay/clair:4.7.1` |
+| **SonarQube** | Code Smells & Complexity | `sonarsource/sonar-scanner-cli`, `sonarqube:10.6.0-community` |
 
 ## Getting Started
 
@@ -32,6 +35,19 @@ The infrastructure automatically pulls the following images on startup:
 3.  **Run a Scan**
     *   Create a project by providing the **Absolute Path** to a folder on your host machine (e.g., `/Users/me/code/my-app`).
     *   Click "Run Analysis".
+
+## SonarQube Setup
+
+The SonarQube service is exposed on [http://localhost:9000](http://localhost:9000). To enable Sonar scans:
+
+1. Log in (default `admin`/`admin`).
+2. Create a **User Token** and export it before starting the stack:
+   ```bash
+   export SONARQUBE_TOKEN=your_token_here
+   docker compose up --build
+   ```
+   Alternatively, set `SONARQUBE_USERNAME` and `SONARQUBE_PASSWORD` environment variables if you prefer username/password auth.
+3. Once the scanner runs, findings are fetched through the SonarQube REST API and normalized alongside the other tools.
 
 ## Troubleshooting
 

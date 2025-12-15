@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 
-export const SUPPORTED_SCANNERS = ['trivy', 'semgrep', 'bandit', 'clair'] as const;
+export const SUPPORTED_SCANNERS = ['trivy', 'semgrep', 'bandit', 'clair', 'sonarqube'] as const;
 export type SupportedScanner = (typeof SUPPORTED_SCANNERS)[number];
 
 export interface UnifiedFinding {
@@ -154,6 +154,41 @@ export const parsers: Record<SupportedScanner, (output: any) => UnifiedFinding[]
       });
     }
 
+    return findings;
+  },
+
+  sonarqube: (sonarOutput: any): UnifiedFinding[] => {
+    const findings: UnifiedFinding[] = [];
+    const issues = Array.isArray(sonarOutput?.issues) ? sonarOutput.issues : [];
+    issues.forEach((issue: any) => {
+      const component = issue.component || 'unknown-component';
+      const filePath = component.includes(':') ? component.split(':').slice(1).join(':') : component;
+      const ruleId = issue.rule || 'sonarqube-rule';
+      const startLine = issue.textRange?.startLine;
+      const endLine = issue.textRange?.endLine ?? startLine;
+      const fingerprint = createFingerprint([issue.key, filePath, ruleId, startLine]);
+      const remediation =
+        typeof issue.ruleDescriptionContext === 'string'
+          ? issue.ruleDescriptionContext
+          : issue.type
+          ? `Resolve ${issue.type.toLowerCase()} via SonarQube`
+          : undefined;
+
+      findings.push({
+        scanner_name: 'sonarqube',
+        scanner_version: sonarOutput?.serverVersion,
+        rule_id: ruleId,
+        fingerprint,
+        severity: normalizeSeverity(issue.severity),
+        file_path: filePath,
+        start_line: startLine,
+        end_line: endLine,
+        title: issue.message || ruleId,
+        description: issue.type ? `${issue.type} (${issue.status || 'OPEN'})` : undefined,
+        remediation,
+        raw_data: issue,
+      });
+    });
     return findings;
   },
 };

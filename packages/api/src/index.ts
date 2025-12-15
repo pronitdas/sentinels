@@ -1,8 +1,20 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
-import { connectDb, createTables, client } from './db';
+import {
+  connectDb,
+  createProject,
+  createScan,
+  createScanRun,
+  createTables,
+  getProjectById,
+  getScanById,
+  listFindings,
+  listProjects,
+  listScanRuns,
+  listScanRunsByScanIds,
+  listScansByProject,
+} from './db';
 import { scannerQueue } from './queue';
-import { v4 as uuidv4 } from 'uuid';
 import { SupportedScanner } from './parsers';
 
 const fastify = Fastify({
@@ -16,77 +28,87 @@ fastify.register(cors, {
 // Register new codebase
 fastify.post('/projects', async (request, reply) => {
   const { name, path } = request.body as { name: string; path: string };
-  const result = await client.query(
-    'INSERT INTO projects (name, path) VALUES ($1, $2) RETURNING id, name, path, created_at',
-    [name, path]
-  );
-  reply.status(201).send(result.rows[0]);
+  const project = await createProject(name, path);
+  reply.status(201).send(project);
 });
 
 // List projects
 fastify.get('/projects', async (request, reply) => {
-  const result = await client.query('SELECT id, name, path, created_at FROM projects');
-  reply.send(result.rows);
+  const projects = await listProjects();
+  reply.send(projects);
 });
 
 // Trigger scan
 fastify.post('/scans', async (request, reply) => {
   const { projectId, scanners } = request.body as { projectId: string; scanners: SupportedScanner[] };
-
-  // Insert scan into DB
-  const scanResult = await client.query(
-    'INSERT INTO scans (project_id, scanners, status) VALUES ($1, $2, $3) RETURNING id, project_id, scanners, status, started_at',
-    [projectId, scanners, 'pending']
-  );
-  const scanId = scanResult.rows[0].id;
-
-  // Add a job to the queue for each scanner
-  for (const scannerType of scanners) {
-    // Fetch project path
-    const projectResult = await client.query('SELECT path FROM projects WHERE id = $1', [projectId]);
-    if (projectResult.rows.length === 0) {
-      reply.status(404).send({ error: 'Project not found' });
-      return;
-    }
-    const hostPath = projectResult.rows[0].path;
-
-    await scannerQueue.add('scan-job', { scanId, hostPath, scannerType });
+  if (!scanners || scanners.length === 0) {
+    reply.status(400).send({ error: 'Select at least one scanner' });
+    return;
   }
 
-  reply.status(202).send(scanResult.rows[0]);
+  const project = await getProjectById(projectId);
+  if (!project) {
+    reply.status(404).send({ error: 'Project not found' });
+    return;
+  }
+
+  const scanRecord = await createScan(projectId, scanners);
+
+  for (const scannerType of scanners) {
+    const run = await createScanRun(scanRecord.id, scannerType);
+    await scannerQueue.add('scan-job', {
+      scanId: scanRecord.id,
+      scanRunId: run.id,
+      hostPath: project.path,
+      scannerType,
+    });
+  }
+
+  reply.status(202).send(scanRecord);
 });
 
 // Get status & summary for a scan
 fastify.get('/scans/:id', async (request, reply) => {
   const { id } = request.params as { id: string };
-  const result = await client.query('SELECT * FROM scans WHERE id = $1', [id]);
-  if (result.rows.length === 0) {
+  const scan = await getScanById(id);
+  if (!scan) {
     reply.status(404).send({ error: 'Scan not found' });
     return;
   }
-  reply.send(result.rows[0]);
+  reply.send(scan);
+});
+
+// Scan runs for a project (history)
+fastify.get('/projects/:id/scans', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const scans = await listScansByProject(id);
+  const scanIds = scans.map((s) => s.id);
+  const runs = await listScanRunsByScanIds(scanIds);
+  const runsByScan = runs.reduce<Record<string, typeof runs>>((acc, run) => {
+    acc[run.scan_id] = acc[run.scan_id] || [];
+    acc[run.scan_id].push(run);
+    return acc;
+  }, {});
+
+  const payload = scans.map((scan) => ({
+    ...scan,
+    runs: runsByScan[scan.id] || [],
+  }));
+
+  reply.send(payload);
+});
+
+fastify.get('/scans/:id/runs', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const runs = await listScanRuns(id);
+  reply.send(runs);
 });
 
 // Global search findings
 fastify.get('/findings', async (request, reply) => {
   const { severity, type } = request.query as { severity?: string; type?: string };
-  let query = 'SELECT * FROM findings WHERE 1=1';
-  const params: string[] = [];
-  let paramIndex = 1;
-
-  if (severity) {
-    query += ` AND severity = $${paramIndex++}`;
-    params.push(severity);
-  }
-  // 'type' is not directly a column in findings, it might be derived from scanner_name or rule_id
-  // For now, ignoring 'type' or assuming it maps to scanner_name for simplicity
-  if (type) {
-    query += ` AND scanner_name = $${paramIndex++}`;
-    params.push(type);
-  }
-
-  const result = await client.query(query, params);
-  reply.send(result.rows);
+  const rows = await listFindings(severity, type);
+  reply.send(rows);
 });
 
 

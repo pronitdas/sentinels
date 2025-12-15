@@ -17,6 +17,10 @@ services:
     environment:
       - DATABASE_URL=postgres://sentinel:sentinel@postgres:5432/sentinel
       - REDIS_URL=redis://redis:6379
+      - SONARQUBE_URL=http://sonarqube:9000
+      - SONARQUBE_TOKEN=${SONARQUBE_TOKEN:-}
+      - SONARQUBE_USERNAME=${SONARQUBE_USERNAME:-admin}
+      - SONARQUBE_PASSWORD=${SONARQUBE_PASSWORD:-admin}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -26,6 +30,8 @@ services:
         condition: service_started
       scanners-setup:
         condition: service_completed_successfully
+      sonarqube:
+        condition: service_started
 
   scanners-setup:
     image: docker:cli
@@ -35,6 +41,10 @@ services:
       sh -c "echo 'Initializing Sentinel Scanners...' &&
              echo 'Pulling Trivy...' && docker pull aquasec/trivy:latest &&
              echo 'Pulling Semgrep...' && docker pull returntocorp/semgrep &&
+             echo 'Pulling Bandit...' && docker pull cytopia/bandit:latest &&
+             echo 'Pulling Clair Scanner...' && docker pull ovotech/clair-scanner:latest &&
+             echo 'Pulling Sonar Scanner...' && docker pull sonarsource/sonar-scanner-cli &&
+             echo 'Pulling Alpine helper...' && docker pull alpine:3.19 &&
              echo 'Pulling Clair...' && docker pull quay.io/projectquay/clair:4.7.1 &&
              echo 'All scanner images ready.'"
 
@@ -50,13 +60,13 @@ services:
       - "35432:5432"
 
   clair-db:
-    image: postgres:15-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: clair
       POSTGRES_PASSWORD: clair
       POSTGRES_DB: clair
     volumes:
-      - clair_pgdata:/var/lib/postgresql/data
+      - clair_pgdatav:/var/lib/postgresql/data
 
   clair:
     image: quay.io/projectquay/clair:4.7.1
@@ -71,8 +81,20 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "36379:6379"
+
+  sonarqube:
+    image: sonarqube:10.6.0-community
+    environment:
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+    ports:
+      - "9000:9000"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
 
 volumes:
   pgdata:
-  clair_pgdata:
+  clair_pgdatav:
+  sonarqube_data:
+  sonarqube_extensions:
