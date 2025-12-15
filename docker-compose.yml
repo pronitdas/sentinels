@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  ui:
+    build: ./packages/ui
+    ports:
+      - "3000:3000"
+    environment:
+      - API_URL=http://localhost:4000
+    depends_on:
+      - api
+
+  api:
+    build: ./packages/api
+    ports:
+      - "4000:4000"
+    environment:
+      - DATABASE_URL=postgres://sentinel:sentinel@postgres:5432/sentinel
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      scanners-setup:
+        condition: service_completed_successfully
+
+  scanners-setup:
+    image: docker:cli
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: >
+      sh -c "echo 'Initializing Sentinel Scanners...' &&
+             echo 'Pulling Trivy...' && docker pull aquasec/trivy:latest &&
+             echo 'Pulling Semgrep...' && docker pull returntocorp/semgrep &&
+             echo 'Pulling Clair...' && docker pull quay.io/projectquay/clair:4.7.1 &&
+             echo 'All scanner images ready.'"
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+      POSTGRES_DB: sentinel
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "35432:5432"
+
+  clair-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: clair
+      POSTGRES_PASSWORD: clair
+      POSTGRES_DB: clair
+    volumes:
+      - clair_pgdata:/var/lib/postgresql/data
+
+  clair:
+    image: quay.io/projectquay/clair:4.7.1
+    depends_on:
+      - clair-db
+    ports:
+      - "6060:6060"
+    volumes:
+      - ./clair_config.yaml:/config.yaml:ro
+    command: -config /config.yaml -mode combo
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
+  clair_pgdata:

@@ -1,0 +1,8 @@
+introspection_addr: :6061
+http_listen_addr: :6060
+log_level: info
+matcher:
+  indexer_addr: http://localhost:6060
+notifier:
+  connstring: host=clair-db port=5432 user=clair password=clair dbname=clair sslmode=disable
+  migrations: true
